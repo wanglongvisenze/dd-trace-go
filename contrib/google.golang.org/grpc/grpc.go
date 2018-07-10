@@ -55,16 +55,13 @@ func UnaryClientInterceptor(opts ...InterceptorOption) grpc.UnaryClientIntercept
 	t := cfg.tracer
 	t.SetServiceInfo(cfg.serviceName, "grpc-client", ext.AppTypeRPC)
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		span, ctx := tracer.StartSpanFromContext(ctx, NewChildSpan("grpc.client"))
+		span, ctx := tracer.StartSpanWithContext(ctx, "grpc.client")
 		span.SetMeta("grpc.method", method)
 		ctx = setIDs(span, ctx)
 
 		err := invoker(ctx, method, req, reply, cc, opts...)
-		if child != nil {
-			child.SetMeta("grpc.code", grpc.Code(err).String())
-			child.FinishWithErr(err)
-
-		}
+		span.SetMeta("grpc.code", grpc.Code(err).String())
+		span.FinishWithErr(err)
 		return err
 	}
 }
