@@ -55,19 +55,9 @@ func UnaryClientInterceptor(opts ...InterceptorOption) grpc.UnaryClientIntercept
 	t := cfg.tracer
 	t.SetServiceInfo(cfg.serviceName, "grpc-client", ext.AppTypeRPC)
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		var child *tracer.Span
-		span, ok := tracer.SpanFromContext(ctx)
-		// only trace the request if this is already part of a trace.
-		// does this make sense?
-		if ok && span.Tracer() != nil {
-			t := span.Tracer()
-			child = t.NewChildSpan("grpc.client", span)
-			child.SetMeta("grpc.method", method)
-			ctx = setIDs(child, ctx)
-			ctx = tracer.ContextWithSpan(ctx, child)
-			// FIXME[matt] add the host / port information here
-			// https://github.com/grpc/grpc-go/issues/951
-		}
+		span, ctx := tracer.StartSpanFromContext(ctx, NewChildSpan("grpc.client"))
+		span.SetMeta("grpc.method", method)
+		ctx = setIDs(span, ctx)
 
 		err := invoker(ctx, method, req, reply, cc, opts...)
 		if child != nil {
