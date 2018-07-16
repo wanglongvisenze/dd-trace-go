@@ -9,6 +9,8 @@ import (
 	"github.com/go-martini/martini"
 )
 
+var routeType = reflect.TypeOf((*martini.Route)(nil)).Elem()
+
 // Middleware creates a martini Handler which will trace incoming requests
 func Middleware(service string) martini.Handler {
 	t := tracer.DefaultTracer
@@ -20,22 +22,23 @@ func Middleware(service string) martini.Handler {
 		}
 
 		span, ctx := t.NewChildSpanWithContext("http.request", req.Context())
+		defer span.Finish()
 
+		// We won't know the resource until after we've routed the request
 		rw := res.(martini.ResponseWriter)
 		rw.Before(func(martini.ResponseWriter) {
-			var r martini.Route
-			r, ok := c.Get(reflect.TypeOf(&r).Elem()).Interface().(martini.Route)
-			if ok {
-				span.Resource = r.GetName()
-				if span.Resource == "" {
-					span.Resource = r.Pattern()
-				}
+			v := c.Get(routeType)
+			if !v.IsValid() {
+				return
 			}
-			span.Finish()
-			// route := c.Get(reflect.TypeOf((martini.Route)(nil)))
-			// if !route.IsNil() {
-			// 	span.Resource = route.Interface().(martini.Route).GetName()
-			// }
+
+			r, ok := v.Interface().(martini.Route)
+			if !ok {
+				return
+			}
+
+			// Use the name if it was provider, otherwise use the pattern
+			span.Resource = firstNonEmpty(r.GetName(), r.Pattern(), span.Resource)
 		})
 
 		span.Type = ext.HTTPType
@@ -50,6 +53,14 @@ func Middleware(service string) martini.Handler {
 
 		// Serve the next middleware
 		c.Next()
-
 	}
+}
+
+func firstNonEmpty(strs ...string) string {
+	for _, str := range strs {
+		if str != "" {
+			return str
+		}
+	}
+	return ""
 }
