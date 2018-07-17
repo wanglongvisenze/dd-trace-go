@@ -43,4 +43,5 @@ func TestTrace(t *testing.T) {
 	assert.Equal("/user/:id", span.Resource)
 	assert.Equal(span.GetMeta(ext.HTTPMethod), "GET")
 	assert.Equal(span.GetMeta(ext.HTTPURL), "/user/123")
+	assert.Equal(span.GetMeta(ext.HTTPCode), "200")
 }

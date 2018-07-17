@@ -1,13 +1,66 @@
 package martini
 
 import (
+	"errors"
 	"net/http"
 	"reflect"
+	"strconv"
+	"sync"
 
 	"github.com/DataDog/dd-trace-go/tracer"
 	"github.com/DataDog/dd-trace-go/tracer/ext"
 	"github.com/go-martini/martini"
 )
+
+type tracingResponseWriter struct {
+	http.ResponseWriter
+	context martini.Context
+
+	// WriteHeader on the ResponseWriter may not be called, so we wrap both
+	// methods and use a sync.Once to avoid filling the values multiple times
+	sync.Once
+	status   int
+	resource string
+}
+
+func newTracingResponseWriter(w http.ResponseWriter, c martini.Context) *tracingResponseWriter {
+	trw := &tracingResponseWriter{
+		ResponseWriter: w,
+		context:        c,
+	}
+	return trw
+}
+
+func (trw *tracingResponseWriter) Write(bs []byte) (int, error) {
+	trw.fillFields(http.StatusOK)
+	return trw.ResponseWriter.Write(bs)
+}
+
+func (trw *tracingResponseWriter) WriteHeader(statusCode int) {
+	trw.fillFields(statusCode)
+	trw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (trw *tracingResponseWriter) fillFields(statusCode int) {
+	trw.Once.Do(func() {
+		// set the status code
+		trw.status = statusCode
+
+		// We won't know the resource until after we've routed the request
+		v := trw.context.Get(routeType)
+		if !v.IsValid() {
+			return
+		}
+
+		r, ok := v.Interface().(martini.Route)
+		if !ok {
+			return
+		}
+
+		// Use the name if it was provider, otherwise use the pattern
+		trw.resource = firstNonEmpty(r.GetName(), r.Pattern())
+	})
+}
 
 var routeType = reflect.TypeOf((*martini.Route)(nil)).Elem()
 
@@ -15,7 +68,7 @@ var routeType = reflect.TypeOf((*martini.Route)(nil)).Elem()
 func Middleware(service string) martini.Handler {
 	t := tracer.DefaultTracer
 	t.SetServiceInfo(service, "go-martini/martini", ext.AppTypeWeb)
-	return func(res http.ResponseWriter, req *http.Request, c martini.Context) {
+	return func(w http.ResponseWriter, req *http.Request, c martini.Context) {
 		if !t.Enabled() {
 			c.Next()
 			return
@@ -24,22 +77,10 @@ func Middleware(service string) martini.Handler {
 		span, ctx := t.NewChildSpanWithContext("http.request", req.Context())
 		defer span.Finish()
 
-		// We won't know the resource until after we've routed the request
-		rw := res.(martini.ResponseWriter)
-		rw.Before(func(martini.ResponseWriter) {
-			v := c.Get(routeType)
-			if !v.IsValid() {
-				return
-			}
+		trw := newTracingResponseWriter(w, c)
 
-			r, ok := v.Interface().(martini.Route)
-			if !ok {
-				return
-			}
-
-			// Use the name if it was provider, otherwise use the pattern
-			span.Resource = firstNonEmpty(r.GetName(), r.Pattern(), span.Resource)
-		})
+		// replace the response writer in the context
+		c.MapTo(trw, (*http.ResponseWriter)(nil))
 
 		span.Type = ext.HTTPType
 		span.Service = service
@@ -53,6 +94,16 @@ func Middleware(service string) martini.Handler {
 
 		// Serve the next middleware
 		c.Next()
+
+		// set the resource
+		span.Resource = firstNonEmpty(trw.resource, span.Resource)
+
+		// set the status
+		status := trw.status
+		span.SetMeta(ext.HTTPCode, strconv.Itoa(status))
+		if status >= 500 && status < 600 {
+			span.FinishWithErr(errors.New(http.StatusText(status)))
+		}
 	}
 }
 
