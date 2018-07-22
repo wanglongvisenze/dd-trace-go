@@ -1,7 +1,6 @@
 package tracer
 
 import (
-	"bytes"
 	"encoding/binary"
 	"io"
 
@@ -36,7 +35,7 @@ type payload struct {
 	count uint64
 
 	// buf holds the sequence of msgpack-encoded items.
-	buf bytes.Buffer
+	buf *buffer
 }
 
 var _ io.Reader = (*payload)(nil)
@@ -45,6 +44,7 @@ var _ io.Reader = (*payload)(nil)
 func newPayload() *payload {
 	p := &payload{
 		header: make([]byte, 8),
+		buf:    newBuffer(),
 		off:    8,
 	}
 	return p
@@ -52,7 +52,7 @@ func newPayload() *payload {
 
 // push pushes a new item into the stream.
 func (p *payload) push(t spanList) error {
-	if err := msgp.Encode(&p.buf, t); err != nil {
+	if err := msgp.Encode(p.buf, t); err != nil {
 		return err
 	}
 	p.count++
@@ -68,14 +68,14 @@ func (p *payload) itemCount() int {
 // size returns the payload size in bytes. After the first read the value becomes
 // inaccurate by up to 8 bytes.
 func (p *payload) size() int {
-	return p.buf.Len() + len(p.header) - p.off
+	return p.buf.len() + len(p.header) - p.off
 }
 
 // reset resets the internal buffer, counter and read offset.
 func (p *payload) reset() {
 	p.off = 8
 	p.count = 0
-	p.buf.Reset()
+	p.buf.reset()
 }
 
 // https://github.com/msgpack/msgpack/blob/master/spec.md#array-format-family
@@ -104,6 +104,11 @@ func (p *payload) updateHeader() {
 	}
 }
 
+func (p *payload) prepare() {
+	p.updateHeader()
+	p.buf.rewind()
+}
+
 // Read implements io.Reader. It reads from the msgpack-encoded stream.
 func (p *payload) Read(b []byte) (n int, err error) {
 	if p.off < len(p.header) {
@@ -113,4 +118,43 @@ func (p *payload) Read(b []byte) (n int, err error) {
 		return n, nil
 	}
 	return p.buf.Read(b)
+}
+
+type buffer struct {
+	buf  []byte
+	r, w int
+}
+
+func newBuffer() *buffer {
+	return &buffer{buf: make([]byte, payloadMaxLimit)}
+}
+
+func (b *buffer) Read(p []byte) (int, error) {
+	n := copy(p, b.buf[b.r:b.w])
+	b.r += n
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (b *buffer) Write(p []byte) (int, error) {
+	n := copy(b.buf[b.w:], p)
+	b.w += n
+	return n, nil
+}
+
+func (b *buffer) WriteString(s string) (int, error) {
+	n := copy(b.buf[b.w:], s)
+	b.w += n
+	return n, nil
+}
+
+func (b *buffer) len() int { return b.w }
+
+func (b *buffer) rewind() { b.r = 0 }
+
+func (b *buffer) reset() {
+	b.r = 0
+	b.w = 0
 }

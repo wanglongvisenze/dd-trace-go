@@ -299,8 +299,9 @@ func (t *tracer) flushTraces() {
 	if t.config.debug {
 		log.Printf("Sending payload: size: %d traces: %d\n", size, count)
 	}
+	t.payload.prepare()
 	err := t.config.transport.send(t.payload)
-	if err != nil && size > payloadMaxLimit {
+	if err != nil && size >= payloadMaxLimit {
 		// we couldn't send the payload and it is getting too big to be
 		// accepted by the agent, we have to drop it.
 		t.payload.reset()

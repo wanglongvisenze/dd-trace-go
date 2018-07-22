@@ -24,6 +24,23 @@ func newSpanList(count int) spanList {
 	return list
 }
 
+// TestPayloadRewind asserts that the payload can be read twice and results
+// in the same output.
+func TestPayloadRewind(t *testing.T) {
+	assert := assert.New(t)
+	p := newPayload()
+	for i := 0; i < 10; i++ {
+		p.push(newSpanList(i))
+	}
+	got1, err := ioutil.ReadAll(p)
+	assert.NoError(err)
+	assert.True(len(got1) > 0)
+	p.prepare()
+	got2, err := ioutil.ReadAll(p)
+	assert.NoError(err)
+	assert.Equal(got1, got2)
+}
+
 // TestPayloadIntegrity tests that whatever we push into the payload
 // allows us to read the same content as would have been encoded by
 // the codec.
@@ -31,7 +48,7 @@ func TestPayloadIntegrity(t *testing.T) {
 	assert := assert.New(t)
 	p := newPayload()
 	want := new(bytes.Buffer)
-	for _, n := range []int{10, 1 << 10, 1 << 17} {
+	for _, n := range []int{10, 100} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			p.reset()
 			lists := make(spanLists, n)
